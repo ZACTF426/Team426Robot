@@ -43,6 +43,7 @@ public class Robot extends TimedRobot {
   private WPI_TalonSRX leftMotorControllerCIM2;
   private WPI_TalonSRX rightMotorControllerCIM1;
   private WPI_TalonSRX rightMotorControllerCIM2;
+  
 
   private SpeedControllerGroup leftMotorGroup;
   private SpeedControllerGroup rightMotorGroup;
@@ -50,6 +51,10 @@ public class Robot extends TimedRobot {
   private WPI_VictorSPX conveyorMotorCIM1;
   private WPI_VictorSPX conveyorMotorCIM2;
   private SpeedControllerGroup conveyorMotorGroup;
+
+  private WPI_TalonSRX climbMotorCIM1;
+  private WPI_TalonSRX climbMotorCIM2;
+  private SpeedControllerGroup climbMotorGroup;
 
   private DigitalInput colorWheelArmLowerLimit;
   private DigitalInput colorWheelArmUpperLimit;
@@ -62,6 +67,9 @@ public class Robot extends TimedRobot {
   private Boolean operatorGamepadLeftTriggerPressed = false;
   private String colorWheelPosition = "DOWN";
   
+  //variable for arming the climb system
+  private Boolean climbMotorEnabled = false;
+
   //Add color sensor through the onboard I2C port
   private final I2C.Port i2cPort = I2C.Port.kOnboard;
   private final ColorSensorV3 m_colorSensor = new ColorSensorV3(i2cPort);
@@ -74,13 +82,13 @@ private ColorMatchResult colorMatch = m_colorMatcher.matchClosestColor(detectedC
 private String lastColorString = "";
 private int numberOfColorChanges = 0;
 
-  //These colors may need to be calibrated with the color wheel in NYC.
+  //These colors have been updated with tests from March 1 in NYC
   //Each color has a decimal value for red, blue, and green in the parentheses.
-  //Use the color values in the dashboard to check these to make sure they match.
-  private final Color kBlue = ColorMatch.makeColor(0.143,0.427,0.429);
-  private final Color kGreen = ColorMatch.makeColor(0.197,0.561,0.240);
-  private final Color kRed = ColorMatch.makeColor(0.561,0.232,0.114);
-  private final Color kYellow = ColorMatch.makeColor(0.361,0.524,0.113);
+  
+  private final Color kBlue = ColorMatch.makeColor(0.131,0.457,0.412);
+  private final Color kGreen = ColorMatch.makeColor(0.169,0.594,0.238);
+  private final Color kRed = ColorMatch.makeColor(0.542,0.347,0.112);
+  private final Color kYellow = ColorMatch.makeColor(0.323,0.565,0.113);
 
   private int kColorChangesForStageTwo = 32;
   private boolean stageTwoComplete = false;
@@ -115,6 +123,11 @@ private int numberOfColorChanges = 0;
       conveyorMotorCIM2 = new WPI_VictorSPX(7);
       conveyorMotorGroup = new SpeedControllerGroup(conveyorMotorCIM1,conveyorMotorCIM2);
 
+//Set up climb motor controllers
+      climbMotorCIM1 = new WPI_TalonSRX(10);
+      climbMotorCIM2 = new WPI_TalonSRX(11);
+      climbMotorGroup = new SpeedControllerGroup(climbMotorCIM1,climbMotorCIM2);
+
 //Set up the color wheel system motor controllers
       colorWheelDrive = new WPI_VictorSPX(8);
       colorWheelArm = new WPI_VictorSPX(9);
@@ -128,6 +141,11 @@ private int numberOfColorChanges = 0;
       m_colorMatcher.addColorMatch(kGreen);
       m_colorMatcher.addColorMatch(kRed);
       m_colorMatcher.addColorMatch(kYellow);
+
+
+//Set up the color wheel system motor controllers
+      colorWheelDrive = new WPI_VictorSPX(8);
+      colorWheelArm = new WPI_VictorSPX(9);
   }
 
   @Override
@@ -150,6 +168,8 @@ private int numberOfColorChanges = 0;
     SmartDashboard.putNumber("leftMotor", leftMotorControllerCIM1.get());
     SmartDashboard.putNumber("rightMotor", rightMotorControllerCIM1.get());
     SmartDashboard.putNumber("conveyorMotor", conveyorMotorCIM1.get());
+    SmartDashboard.putNumber("climbMotor", climbMotorCIM1.get());
+    SmartDashboard.putBoolean("climbMotorEnabled",climbMotorEnabled);
 
     //Show color wheel information
     SmartDashboard.putNumber("colorWheelArm", colorWheelArm.get());
@@ -217,6 +237,7 @@ private int numberOfColorChanges = 0;
 
     //moveColorWheelUpDown == 1: move color wheel manipulator down
     //moveColorWheelUpDown == 2: move color wheel manipulator up
+    //moveColorWheelUpDown == 0: color wheel is stationary in either the up or down position.
 
     //if top left bumper button is pressed and the upper limit switch is not pressed, raise the color wheel arm
   
@@ -235,35 +256,51 @@ private int numberOfColorChanges = 0;
       moveColorWheelUpDown = 2;
     }
 
-    if(lastPressed && colorWheelArmLowerLimit.get()) {
-      lastPressed = !colorWheelArmLowerLimit.get();
-    }
+    //evaluate and react to the state of color wheel
+    switch(moveColorWheelUpDown){
 
-    if(moveColorWheelUpDown == 1) {
-      //Check if colorWheelArmLowerLimit switch is not pressed before running motor
-      if(lastPressed && colorWheelState == 2) {
-        colorWheelArm.set(-.5);
-        colorWheelPosition = "MOVING DOWN";
-      } else if(!colorWheelArmLowerLimit.get()) {
-        colorWheelArm.set(0);
-        lastPressed = true;
-        colorWheelState = 1;
+      //Case 0 is the idle state of the color wheel arm. The motor power is set to zero.
+
+      //Case 1 is that the color wheel should be moving into the down position.
+      case 1:
+
+      if(!colorWheelArmLowerLimit.get()){
+        //If the lower limit switch is hit, it means the arm has arrived at the down position.
         colorWheelPosition = "DOWN";
+
+        //Set the state of the arm to be idle. 
+        moveColorWheelUpDown = 0; 
       }
-    } else if(moveColorWheelUpDown == 2) {
-      //Check if colorWheelArmUpperLimit switch is not pressed before running motor
-      if(lastPressed && colorWheelState == 1) {
-        colorWheelArm.set(.5);
-        colorWheelPosition = "MOVING UP";
-      } else if (!colorWheelArmLowerLimit.get()){
-        colorWheelArm.set(0);
-        lastPressed = true;
-        colorWheelState = 2;
-        colorWheelPosition = "UP";
+      else{
+        //If the limit switch has not been hit, but moveColorWheelUpDown is 1, it means the arm is moving down.
+        colorWheelPosition = "MOVING DOWN";
+        colorWheelArm.set(-.5);
+
       }
+      break;
+
+      //Case 2 is that the color wheel is to be moving into the up position.
+      case 2:
+        if(!colorWheelArmUpperLimit.get()){
+          //If the upper limit switch is hit, it means the arm has arrived at the up position.
+          colorWheelPosition = "UP";
+
+          //Set the state of the arm to be idle. 
+          moveColorWheelUpDown = 0; 
+        }
+        else{
+          //If the limit switch has not been hit, but moveColorWheelUpDown is 2, it means the arm is still moving up.
+          colorWheelPosition = "MOVING UP";
+          colorWheelArm.set(.5);
+
+        }
+        break;
+      
+
+
     }
 
-  
+
   //**********COLOR SENSOR **********//
 
   //Get the raw readings from the color sensor
@@ -299,8 +336,42 @@ private int numberOfColorChanges = 0;
 
   //Set up the start button to reset the counter for color changes of the wheel.
   if(gamepadOperator.getStartButtonPressed()){
+    //We want to reset both the number and stageTwoComplete because we probably didn't get the rotation count right for stage two. 
     numberOfColorChanges = 0;
+    stageTwoComplete = false;
   }
+
+  //**********CLIMB MOTOR CONTROL**********//
+
+//If the drive gamepad A button is pressed, this arms or disarms the climb mechanism.
+
+if (gamepadDrive.getAButtonPressed()){
+  if(climbMotorEnabled){
+    climbMotorEnabled = false;
+  }
+  else{
+    climbMotorEnabled = true;
+  }
+}
+
+//These functions will only be active if the climbMotorEnabled variable is true:
+if(climbMotorEnabled){
+  //If operator A button is pressed, set the climbMotorGroup to be on forward
+  if (gamepadOperator.getAButton()){
+    climbMotorGroup.set(1.0);
+  }
+  
+  //If operator AYbutton is pressed, set the climbMotorGroup to be on backward
+  else if(gamepadOperator.getYButton()){
+    climbMotorGroup.set(-1.0);
+  }
+  else{
+    climbMotorGroup.set(0.0);
+  }
+
+}
+
+
 
 } //End of robotPeriodicTeleop
 
